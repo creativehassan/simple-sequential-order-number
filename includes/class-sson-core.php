@@ -30,10 +30,11 @@ class SSON_Core {
 		// Enable order search by order number
 		add_filter( 'woocommerce_shortcode_order_tracking_order_id', array( $this, 'find_order_by_order_number' ), 1 );
 
-		// Admin hooks
+		// Admin hooks for search
 		if ( is_admin() ) {
-			add_filter( 'woocommerce_shop_order_search_fields', array( $this, 'add_search_fields' ) );
-			add_filter( 'woocommerce_order_table_search_query_meta_keys', array( $this, 'add_search_fields' ) );
+			// Hook into order search to extract order ID from formatted numbers
+			add_filter( 'woocommerce_order_list_table_prepare_items_query_args', array( $this, 'modify_order_search' ), 10, 1 );
+			add_action( 'parse_query', array( $this, 'modify_order_search_legacy' ), 20 );
 		}
 	}
 
@@ -50,8 +51,8 @@ class SSON_Core {
 	 * @return string Formatted order number (prefix + order_id + suffix, without #)
 	 */
 	public function get_order_number( $order_number, $order ) {
-		// Don't modify subscription objects
-		if ( $order instanceof WC_Subscription ) {
+		// Don't modify subscription objects (if WooCommerce Subscriptions is active)
+		if ( class_exists( 'WC_Subscription' ) && is_a( $order, 'WC_Subscription' ) ) {
 			return $order_number;
 		}
 
@@ -155,14 +156,94 @@ class SSON_Core {
 	}
 
 	/**
-	 * Add search fields for order number
+	 * Modify order search for HPOS (High-Performance Order Storage)
+	 * Extracts order ID from formatted order numbers
 	 *
-	 * @param array $fields Search fields
-	 * @return array Modified search fields
+	 * @param array $query_args Query arguments
+	 * @return array Modified query arguments
 	 */
-	public function add_search_fields( $fields ) {
-		// Search works by extracting order ID from formatted number, so no meta search needed
-		return $fields;
+	public function modify_order_search( $query_args ) {
+		if ( ! isset( $query_args['s'] ) || empty( $query_args['s'] ) ) {
+			return $query_args;
+		}
+
+		$search_term = trim( $query_args['s'] );
+		
+		// Try to extract order ID from formatted number
+		$order_id = $this->extract_order_id_from_search( $search_term );
+		
+		if ( $order_id > 0 ) {
+			// Replace search term with order ID (WooCommerce handles numeric searches for order IDs)
+			$query_args['s'] = (string) $order_id;
+		}
+
+		return $query_args;
+	}
+
+	/**
+	 * Modify order search for legacy (non-HPOS) stores
+	 * Extracts order ID from formatted order numbers
+	 *
+	 * @param WP_Query $query Query object
+	 */
+	public function modify_order_search_legacy( $query ) {
+		global $pagenow, $typenow;
+
+		// Only on orders page
+		if ( 'edit.php' !== $pagenow || 'shop_order' !== $typenow ) {
+			return;
+		}
+
+		// Only if there's a search term
+		if ( ! isset( $_GET['s'] ) || empty( $query->query_vars['s'] ) ) {
+			return;
+		}
+
+		$search_term = trim( sanitize_text_field( wp_unslash( $_GET['s'] ) ) );
+		
+		// Try to extract order ID from formatted number
+		$order_id = $this->extract_order_id_from_search( $search_term );
+		
+		if ( $order_id > 0 ) {
+			// Modify query to search by order ID
+			$query->query_vars['post__in'] = array( $order_id );
+			unset( $query->query_vars['s'] );
+		}
+	}
+
+	/**
+	 * Extract order ID from search term (removes prefix and suffix)
+	 *
+	 * @param string $search_term Search term
+	 * @return int Order ID or 0 if not found
+	 */
+	private function extract_order_id_from_search( $search_term ) {
+		// Remove # prefix if present
+		$search_term = ltrim( $search_term, '#' );
+
+		// Get prefix and suffix
+		$prefix = $this->get_prefix();
+		$suffix = $this->get_suffix();
+
+		// Remove prefix if it matches
+		if ( $prefix && strpos( $search_term, $prefix ) === 0 ) {
+			$search_term = substr( $search_term, strlen( $prefix ) );
+		}
+
+		// Remove suffix if it matches
+		if ( $suffix && substr( $search_term, -strlen( $suffix ) ) === $suffix ) {
+			$search_term = substr( $search_term, 0, -strlen( $suffix ) );
+		}
+
+		// Try to get order ID (should be numeric after removing prefix/suffix)
+		$order_id = absint( $search_term );
+		
+		// Verify order exists
+		if ( $order_id > 0 && wc_get_order( $order_id ) ) {
+			return $order_id;
+		}
+
+		return 0;
 	}
 
 
