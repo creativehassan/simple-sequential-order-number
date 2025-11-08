@@ -92,7 +92,6 @@ You can use date patterns in your prefix and suffix:
 
 For issues, questions, or contributions, please visit:
 - **Website:** https://coresolstudio.com
-- **GitHub:** [Your GitHub Repository URL]
 
 ## Changelog
 
